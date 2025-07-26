@@ -1,7 +1,6 @@
 # NxN Rubik's Cube Solver using IDA\*
 
 > **Hackathon Submission**: AeroHack 2025 (CS Track)  
-> **Team**: RubiGenius  
 > **Contributor**: Sriram J
 
 ---
