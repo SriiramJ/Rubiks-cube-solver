@@ -219,12 +219,18 @@ let MOVES = buildMoves(3);
 
 // ------------------ 3. Heuristic ------------------
 function heuristic(cube) {
+  // Count misplaced stickers (excluding centers)
   let wrong = 0;
   for (let face in cube.faces) {
     const arr = cube.faces[face];
     const center = arr[Math.floor(arr.length / 2)];
-    wrong += arr.filter((c) => c !== center).length;
+    for (let i = 0; i < arr.length; i++) {
+      // Skip center sticker
+      if (i === Math.floor(arr.length / 2)) continue;
+      if (arr[i] !== center) wrong++;
+    }
   }
+  // Each move can fix up to 8 stickers, so divide by 8
   return Math.ceil(wrong / 8);
 }
 
@@ -232,42 +238,32 @@ function heuristic(cube) {
 function idaStar(startCube) {
   MOVES = buildMoves(startCube.size);
   let threshold = heuristic(startCube);
-  const visited = new Set();
-  const maxThreshold = 50; // Cap to prevent infinite loops
+  const maxThreshold = 30; // Lower cap for speed
 
   function search(cube, g, threshold, path, lastMove) {
     const f = g + heuristic(cube);
-    if (f > threshold) return { found: false, threshold: f };
-    if (cube.isSolved()) return { found: true, path };
-
-    const state = cubeStateToString(cube);
-    if (visited.has(state)) return { found: false, threshold: Infinity };
-    visited.add(state);
+    if (f > threshold) return f;
+    if (cube.isSolved()) return path;
 
     let min = Infinity;
     for (let move in MOVES) {
+      // Prune: don't repeat same face or do inverse
       if (lastMove && move[0] === lastMove[0]) continue;
-      const result = search(
-        MOVES[move](cube),
-        g + 1,
-        threshold,
-        [...path, move],
-        move
-      );
-      if (result.found) return result;
-      min = Math.min(min, result.threshold);
+      if (lastMove && move[0] === lastMove[0] && move.includes("'") !== lastMove.includes("'")) continue;
+      const nextCube = MOVES[move](cube);
+      const result = search(nextCube, g + 1, threshold, [...path, move], move);
+      if (Array.isArray(result)) return result;
+      if (result < min) min = result;
     }
-    return { found: false, threshold: min };
+    return min;
   }
 
   while (threshold <= maxThreshold) {
-    visited.clear();
     const result = search(startCube, 0, threshold, [], null);
-    if (result.found) return result.path;
-    if (result.threshold === Infinity) return null;
-    threshold = result.threshold;
+    if (Array.isArray(result)) return result;
+    threshold = result;
   }
-  return null; // Could not solve within threshold cap
+  return null;
 }
 
 // ------------------ 5. Safe Scramble ------------------
@@ -287,17 +283,96 @@ function scramble(cube, count = 20) {
   return { scrambledCube: result, moves };
 }
 
-// ------------------ 6. Example Manual Test ------------------
-const cube = new Cube(3);
-const { scrambledCube, moves: scrambleMoves } = scramble(cube);
-console.log("✅ Scrambled using:", scrambleMoves);
 
-console.time("SolveTime");
-const solution = idaStar(scrambledCube);
-console.timeEnd("SolveTime");
 
-if (solution) {
-  console.log("✅ Moves to solve:", solution);
-} else {
-  console.log("❌ No solution found (within 50 depth)");
+// --- Visualization and UI Logic ---
+
+let currentCube = null;
+let currentSize = 3;
+let scrambleHistory = [];
+
+function renderCube(cube) {
+  const container = document.getElementById('cube-container');
+  container.innerHTML = '';
+  const faceOrder = ['U', 'L', 'F', 'R', 'B', 'D'];
+  const faceNames = {
+    U: 'Up', D: 'Down', F: 'Front', B: 'Back', L: 'Left', R: 'Right'
+  };
+  faceOrder.forEach(face => {
+    const faceDiv = document.createElement('div');
+    faceDiv.className = 'face';
+    faceDiv.style.setProperty('--size', cube.size);
+    faceDiv.title = faceNames[face];
+    cube.faces[face].forEach(color => {
+      const cell = document.createElement('div');
+      cell.className = `cell ${color}`;
+      faceDiv.appendChild(cell);
+    });
+    container.appendChild(faceDiv);
+  });
 }
+
+function generateCube() {
+  const size = parseInt(document.getElementById('size').value, 10);
+  currentSize = size;
+  currentCube = new Cube(size);
+  scrambleHistory = [];
+  renderCube(currentCube);
+}
+
+function scrambleCube() {
+  if (!currentCube) generateCube();
+  const { scrambledCube, moves } = scramble(currentCube, 3);
+  currentCube = scrambledCube;
+  scrambleHistory = moves;
+  renderCube(currentCube);
+  alert('Scrambled using: ' + moves.join(' '));
+  console.log(moves);
+  
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function animateSolution(cube, moves, delay = 400) {
+  let tempCube = cube;
+  for (const move of moves) {
+    await sleep(delay);
+    tempCube = MOVES[move](tempCube);
+    renderCube(tempCube);
+  }
+}
+
+async function solveCube() {
+  if (!currentCube) generateCube();
+  document.getElementById('solve-btn').disabled = true;
+  document.getElementById('solve-btn').innerText = 'Solving...';
+  await sleep(100); // allow UI update
+
+  // Solve in a worker if available, else main thread
+  let solution = null;
+  if (window.Worker) {
+    // Use a web worker for heavy computation
+    const worker = new Worker('solverWorker.js');
+    worker.postMessage({ cubeData: { size: currentCube.size, faces: currentCube.faces } });
+    solution = await new Promise(resolve => {
+      worker.onmessage = (e) => resolve(e.data.solution);
+    });
+  } else {
+    solution = idaStar(currentCube);
+  }
+
+  if (solution) {
+    await animateSolution(currentCube, solution, 400);
+    alert('Solved! Moves: ' + solution.join(' '));
+    // Update currentCube to solved state
+    currentCube = new Cube(currentSize);
+    renderCube(currentCube);
+  } else {
+    alert('No solution found (within 30 depth)');
+  }
+  document.getElementById('solve-btn').disabled = false;
+  document.getElementById('solve-btn').innerText = 'Solve';
+}
+
